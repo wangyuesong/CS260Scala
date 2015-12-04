@@ -15,7 +15,7 @@ object Helpers {
   def call( x:Var, as:Set[Address], σ:Heap, mn:MethodName, vs:Seq[Value], ρ:Locals, κs:Seq[Kont] ): Set[(Locals, Heap, Seq[Kont])] =
   {
     //Set[Address, Method]
-    val am = as map { a => (a, θ(σ.applyO(a).get.cn)._2.get(mn).get)}
+    val am = as map { a => (a, θ(σ.applyO(a).cn)._2.get(mn).get)}
     var returnValue : Set[(Locals, Heap, Seq[Kont])] = Set[(Locals, Heap, Seq[Kont])]() 
     am.foreach(a => {
       val self = List((Var("self")->Reference(Set(a._1),false)))
@@ -34,6 +34,8 @@ object Helpers {
   {
     val initMethod = θ(cn)._2(cn)
     //Two address
+    //生成a的时候判断一下var是否在local里，在的话就不生成新的id
+   
     val top_a = Address(x.id)
     val top_a_k = Address(initMethod.id)
     
@@ -42,8 +44,8 @@ object Helpers {
     val objectDefaultFieldValues = fields.map(p=> (p._1 -> defaultvalue(p._2)))
     
     val o = Object(cn, objectDefaultFieldValues)
-   
     //These are for new local
+    //这一句有问题
     val self = List((Var("self")->Reference(Set(top_a),false)))
     val assignedParams = θ(cn)._2(cn).params.tail.map(a=>a.x).toList zip (vs)
     val defaultParams = θ(cn)._2(cn).params.drop(assignedParams.length + 1) map (p=> (p.x->defaultvalue(p.τ)))
@@ -60,7 +62,7 @@ object Helpers {
     τ match{
     case IntT => ℤ.α(0)
     case BoolT => Bool.α(false)
-    case StrT => Str.α("")
+    case StrT => Str.α(Set[String](""))
     case _ => Reference.Null
     }
   }
@@ -110,15 +112,8 @@ def initstate(p: Program): State = {
 //  // section 2.3.6
   def lookup( sa:Set[Address], x:Var, σ:Heap ): Value =
   {
-       var valList = List[Value]();
-       sa.foreach { a => {
-        val b = σ.applyO(a) match {
-          case Some(o) => o(x)
-          case None => sys.error("undefined behavoir")
-        }
-        valList = valList :+ b;
-       }}
-       valList.tail.foldLeft(valList(0))((a,b) => a ⊔ b )
+       var valList = sa.map { a => σ.applyO(a) }.map{o => o(x)}
+       valList.reduceLeft(_ ⊔ _)
   }
        
   // section 2.3.7
@@ -127,21 +122,16 @@ def initstate(p: Program): State = {
 
   // section 2.3.8
   def update( σ:Heap, as:Set[Address], x:Var, v:Value ): Heap ={
-    var newHeap = Heap(σ.oMap, σ.kMap)
-    as.foreach { 
-       a => {
-       σ.applyO(a) match {
-        case None => sys.error("undefined behavoir")
-        case Some(o) => {
-          val newField =  (x,(o.flds(x) ⊔ v));
-           newHeap = newHeap.addO((a-> (o+ newField)))
-        }
-        case _ => sys.error("undefined behavoir")
-       }
+    	var σ1 = σ
+    	for(a<-as)
+      {
+		    var o = σ.applyO(a) 
+		    var xv = (x, v ⊔ o.flds(x))
+		    o = o + xv
+		    σ1 = σ1.addO(a, o)
       }
-
-    }
-   newHeap
+    	//as.foreach(a => val o = (σ(a)) o._2(x) = (v ⊔ σ(a)._2(x)) σ = σ + (a, o))
+      σ1
   }
   
 }

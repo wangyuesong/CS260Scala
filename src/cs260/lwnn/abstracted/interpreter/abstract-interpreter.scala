@@ -12,7 +12,7 @@ import TypeAliases._
 // Abstract interpreter entry point
 package cs260.lwnn.abstracted.interpreter {
   object Abstract {
-
+    var count = 0;
     def main(args: Array[String]) {
       //    val a = args(0);
       val s = scala.io.Source.fromFile(args(0)).mkString
@@ -20,52 +20,71 @@ package cs260.lwnn.abstracted.interpreter {
         // parsing error: program is not well-formed
         case Left(err) ⇒ println(err)
 
-        // successfully parsed: program is well-formed
         case Right((classTable, ast: Program)) ⇒
           try {
-            // throws Illtyped exception if program is not well-typed
             Typechecker.typecheck(ast, classTable)
-            // program is well-formed and well-typed; ready to compute
-            // fixpoint for collecting semantics
-            //
-            // NOTE: this version computes the MOP result, i.e., there
-            //       is no widening.
-            // worklist
             var work = Set[State](initstate(ast))
 
-            // remember set
-            val memo = MSet[State]()
+            var memo = MMap[Int, State]();
 
-            // compute fixpoint
             while (work.nonEmpty) {
               val nextWorkList = work.flatMap(_.next)
-              println("Current Worklist size:" + nextWorkList.size)
+              println(count + ":Current Worklist size:" + nextWorkList.size)
+              count = count + 1;
+//              Thread.sleep(100);
+              var memoAdddedCount = 0;
+              println("Memo count: " + memo.size);
+              nextWorkList.foreach { x => println(x.so) }
               work = nextWorkList flatMap (ς ⇒
                 {
-                  println("-Stmt: " + ς.so)
-                  println("-Locals: " + ς.ρ)
-                  println("-Heap: " + ς.σ)
-                  println("-Konts: " + ς.κs)
-                  println()
                   if (ς.fin)
-                    // if this is a final state, we don't need to do
-                    // anything
                     None
-                  else if (ς.so.isEmpty && !ς.κs.head.isInstanceOf[FinK])
-                    // we'll skip memorizing intermediate states (i.e.,
-                    // states with no statement) just to save space; go
-                    // ahead and put such states on the worklist
-                    Some(ς)
-                  else if (!memo(ς)) {
-                    // if the state does have a statement, and we have not
-                    // seen it before, memoize it and put it on the
-                    // worklist
-                    memo += ς
-                    Some(ς)
-                  } else
-                    // the state does have a statement, but we've seen it
-                    // before so we don't need to process it again
-                    None
+                  else if (ς.so.isEmpty) {
+                    //Empty and not fink
+                    if (!ς.κs.head.isInstanceOf[FinK])
+                      Some(ς)
+                    //Empty but is fink
+                    else {
+                      val finKId = ς.κs.head.asInstanceOf[FinK].a.loc
+                      //This fink has been seen before
+                      memo.get(finKId) match {
+                        case Some(s) => {
+                          val oldState = memo.get(finKId).get
+                          val newState = memo.get(finKId).get.widening(ς)
+                          if (oldState.equals(newState))
+                            None
+                          else {
+                            memo = memo + (finKId -> newState)
+                            Some(ς)
+                          }
+                        }
+                        //Haven't seen before
+                        case None => {
+                          memo = memo + (finKId -> ς)
+                          Some(ς)
+                        }
+                      }
+                    }
+                  } //语句不空，memo中没有这个stmt的id对应的state
+                  else {
+                    ς.so match {
+                      case Some(s) => {
+                        if (memo contains s.id) {
+                          if (memo(s.id) == memo(s.id).widening(ς))
+                            None
+                          else {
+                            memo(s.id) = memo(s.id).widening(ς)
+                            Some(memo(s.id))
+                          }
+                        } // if the state does have a statement, and we have not
+                        else {
+                          memo += (s.id -> ς)
+                          Some(ς)
+                        }
+                      }
+                      case _ => None
+                    }
+                  }
                 })
             }
 
@@ -73,16 +92,16 @@ package cs260.lwnn.abstracted.interpreter {
             // Print, join all values for the printed expresion together
             // and output the result. Do this in ascending order of the
             // Print statements' node ids.
-            println("TOTAL MEMO COUNT:" + memo.size)
+            //            println("TOTAL MEMO COUNT:" + memo.size)
             val out = MMap[Int, Value]()
             memo foreach {
-              case ς @ State(Some(print @ Print(e)), _, _, _) ⇒
+              case ς @ (_, State(Some(print @ Print(e)), _, _, _)) ⇒
                 out get print.id match {
                   case None ⇒
-                    out(print.id) = ς.η(e)
+                    out(print.id) = ς._2.η(e)
 
                   case Some(v) ⇒ {
-                    out(print.id) = ς.η(e) ⊔ v
+                    out(print.id) = ς._2.η(e) ⊔ v
                   }
                 }
 
@@ -111,6 +130,22 @@ package cs260.lwnn.abstracted.interpreter {
   // includes if η returns a ⊥ value.
 
   case class State(so: Option[Stmt], ρ: Locals, σ: Heap, κs: Seq[Kont]) {
+    override def toString() = {
+      val stmt = "Statement:\n" + so + "\n"
+      var locals = "Locals:\n"
+      ρ.x2v.foreach(m => locals = locals + m._1.name + ":" + m._2 + "\n")
+      var heap = "Heap:\n OMap:\n"
+      σ.a2o.foreach(x => heap = heap + x._1 + ":" + x._2 + "\n")
+      heap = heap + "KMap:\n"
+      σ.a2k.foreach(x => heap = heap + x._1 + ":" + x._2 + "\n")
+      stmt + locals + heap
+
+    }
+    //两个state进行widen操作，首先stmt肯定相同，不需要widen，Locals中的所有var值join，遇到reference
+    def widening(s: State) = {
+      State(so, ρ.widening(s.ρ), σ.widening(s.σ), κs)
+    }
+
     // is this a final state (i.e., the program has terminated)?
     def fin: Boolean =
       so.isEmpty && κs.isEmpty
@@ -135,7 +170,7 @@ package cs260.lwnn.abstracted.interpreter {
             case Reference(sa, false) =>
               lookup(sa, x, σ)
             case _ =>
-              Reference.Null
+              Reference.⊥
           }
         case Binop(op, e1, e2) =>
           op match {
@@ -146,12 +181,12 @@ package cs260.lwnn.abstracted.interpreter {
             case ⌜<⌝ ⇒ η(e1) < η(e2)
             case ⌜≤⌝ ⇒ η(e1) ≤ η(e2)
             case ⌜≈⌝ ⇒ η(e1) ≈ η(e2)
-            case ⌜≠⌝ ⇒ 
+            case ⌜≠⌝ ⇒
               {
-              val a = η(e1)
-              val b = η(e2)
-              val result = a≠b
-              result
+                val a = η(e1)
+                val b = η(e2)
+                val result = a ≠ b
+                result
               }
             case ⌜∧⌝ ⇒ η(e1) ∧ η(e2)
             case ⌜∨⌝ ⇒ η(e1) ∨ η(e2)
@@ -169,8 +204,8 @@ package cs260.lwnn.abstracted.interpreter {
               }
               case Assign(x, e) =>
                 {
-                  val temp = η(e)
-                  Set[State](State(None, ρ + (x -> temp), σ, κs))
+                  if (η(e).is_⊥) Set()
+                  Set[State](State(None, ρ + (x -> η(e)), σ, κs))
 
                 }
 
@@ -180,12 +215,22 @@ package cs260.lwnn.abstracted.interpreter {
                   case Reference(as, nil) => Set[State](State(None, ρ, update(σ, as, x, η(e2)), κs))
                   case _                  => Set()
                 }
+              //if(..)
+              //   X= new A();
+              //                else
+              //                  X = new B();
+              //                X.s();
+
               case Call(x, e, mn, args) =>
-                η(e) match {
-                  case Reference(as, nil) =>
-                    val argVals = args map (η(_))
-                    call(x, as, σ, mn, argVals, ρ, κs) map (o => State(None, o._1, o._2, o._3))
-                  case _ => Set()
+                {
+                  η(e) match {
+                    case Reference(as, false) => {
+                      val argVals = args map (η(_))
+                      val tempVal = call(x, as, σ, mn, argVals, ρ, κs) map (o => State(None, o._1, o._2, o._3))
+                      tempVal
+                    }
+                    case _ => Set()
+                  }
                 }
               case New(x, cn, args) =>
                 {
@@ -223,18 +268,11 @@ package cs260.lwnn.abstracted.interpreter {
               case _ =>
                 κs.head match {
                   case FinK(a) => {
-                    val kSet = σ.applyK(a).get
-                    kSet.map ( k => k.head match{ 
-                     case RetK(x, e, ρ1) =>
+                    val kSet = σ.applyK(a)
+                    kSet.map(k => k.head match {
+                      case RetK(x, e, ρ1) =>
                         copy(ρ = ρ1 + (x -> η(e)), κs = k.drop(1))
                     })
-//                        k match {
-//                      case RetK(x, e, ρ1) =>
-//                        if (η(e).is_⊥) Set()
-//                        else
-//                          Set(copy(ρ = ρ1 + (x -> η(e)), κs = k.drop(1)))
-//                      case _ => Set()
-//                    }
                   }
                   case StmtK(s1) =>
                     Set(copy(so = Some(s1), κs = κs.tail))
